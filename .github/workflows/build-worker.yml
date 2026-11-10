@@ -1,0 +1,62 @@
+name: build-worker
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/build-worker.yml']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      DSID: ${{ secrets.DSID }}
+    steps:
+      - name: Fetch iOSAuthRuntime
+        shell: cmd
+        run: git clone --depth 1 https://github.com/iOS-Auth/iOSAuthRuntime iOSAuthRuntime
+
+      - name: Fetch iOSAuthSingle
+        shell: cmd
+        run: git clone --depth 1 https://github.com/iOS-Auth/iOSAuthSingle iOSAuthSingle
+
+      - name: Insert DSID from repo secret (placeholder 99999999999 otherwise)
+        shell: pwsh
+        run: |
+          $exec = Join-Path $PWD 'iOSAuthRuntime\Exec.cpp'
+          if (-not $env:DSID) {
+            Write-Warning 'Secret DSID is not set - building placeholder worker (transport smoke only, no real authorization)'
+            exit 0
+          }
+          $dsid = $env:DSID.Trim()
+          if ($dsid -notmatch '^\d{1,18}$') { Write-Error 'DSID must be digits'; exit 1 }
+          (Get-Content $exec -Raw) -replace '99999999999ull', "$dsid" + 'ull' | Set-Content $exec -NoNewline
+          if (-not (Select-String -Path $exec -Pattern ([regex]::Escape("$dsid" + 'ull')) -Quiet)) {
+            Write-Error 'DSID substitution failed'
+            exit 1
+          }
+          Write-Host "DSID inserted: $($dsid.Substring(0, [Math]::Min(4, $dsid.Length)))****"
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build runtime + single (Win32 Release, toolset v143)
+        shell: cmd
+        run: |
+          msbuild iOSAuthRuntime\iOSAuthRuntime.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="%GITHUB_WORKSPACE%\\"
+          if errorlevel 1 exit /b 1
+          msbuild iOSAuthSingle\iOSAuthSingle.vcxproj /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v143 /p:SolutionDir="%GITHUB_WORKSPACE%\\"
+          if errorlevel 1 exit /b 1
+
+      - name: Collect worker artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Get-ChildItem -Recurse -Include iOSAuthRuntime.dll,iOSAuthSingle.exe,iOSAuthRuntime.lib | ForEach-Object {
+            Copy-Item $_.FullName -Destination dist -Force
+          }
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verni-worker-Win32
+          path: dist
+          if-no-files-found: error

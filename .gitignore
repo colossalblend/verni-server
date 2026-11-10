@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env.server
+verni-key.txt
+cert.pem
+key.pem
+key_udids.json
+worker/
+dist/
+srpackages/
+srvlog.txt
+.server.pid
+.gitignore.bak

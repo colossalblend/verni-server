@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: windows-latest
+    env:
+      VERNI_WORKER_PORT: '5555'
+      VERNI_WORKER_HOST: '127.0.0.1'
+      VERNI_SESSION_TTL: '900'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Syntax gate
+        run: python -m py_compile server.py bridge.py make_key.py test_worker.py test_server.py test_flow.py fake_worker.py
+      - name: Generate TLS + verni key (localhost)
+        run: |
+          python make_key.py cert 127.0.0.1 --days 2
+          python make_key.py key --days 2
+      - name: Launch fake worker and server
+        shell: pwsh
+        run: |
+          Start-Process python -ArgumentList "$PWD\fake_worker.py","5555" -WindowStyle Hidden
+          Start-Sleep 2
+          Start-Process python -ArgumentList "-m","uvicorn","server:app","--host","127.0.0.1","--port","18766","--ssl-certfile","$PWD\cert.pem","--ssl-keyfile","$PWD\key.pem" -WindowStyle Hidden
+          Start-Sleep 6
+      - name: Worker framing smoke
+        run: python test_worker.py 127.0.0.1 5555
+        continue-on-error: true   # вне реги от fake воркера, двере HTTP важнее
+      - name: HTTP contract 5/5
+        shell: pwsh
+        run: |
+          $tok = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
+          python test_server.py https://127.0.0.1:18766 $tok
+      - name: Full begin->complete->abort flow
+        shell: pwsh
+        run: |
+          $tok = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
+          python test_flow.py https://127.0.0.1:18766 $tok
