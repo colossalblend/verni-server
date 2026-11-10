@@ -31,6 +31,7 @@ jobs:
         run: |
           Start-Process python -ArgumentList "$PWD\fake_worker.py","5555" -WindowStyle Hidden
           Start-Sleep 2
+          $env:VERNI_TOKEN = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
           Start-Process python -ArgumentList "-m","uvicorn","server:app","--host","127.0.0.1","--port","18766","--ssl-certfile","$PWD\cert.pem","--ssl-keyfile","$PWD\key.pem" -WindowStyle Hidden
           Start-Sleep 6
       - name: Worker framing smoke
