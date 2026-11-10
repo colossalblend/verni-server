@@ -37,7 +37,7 @@ authoriation store, App-Store подпись появится для устан�
   **хотя бы раз** после регистрации под своим Apple ID. Плюс `Apple
   Application Support (x86)` и `Apple Mobile Device Support` — их ставит
   установщик iTunes сам.
-* Python 3.10+ (серверная часть) — `pip install -r requirements.txt`.
+* Python 3.10+ (серверная часть и `get_dsid.py`) — `pip install -r requirements.txt`.
 * Visual Studio 2019/2022 (если собирать iOSAuthRuntime самому).
 
 ## Шаг 1 — iTunes + авторизация Apple ID
