@@ -23,7 +23,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-DSID_URL = "https://music.apple.com/us/account"
+DSID_URL = "https://www.icloud.com/"
 HERE = Path(__file__).resolve().parent
 DSID_FILE = HERE / "dsid.txt"
 POLL_S = 1.5
@@ -37,6 +37,12 @@ def extract_dsid(cookies) -> str | None:
         if name.lower() in ("dsid", "x_dsid", "x-dsid"):
             if value.isdigit():
                 return value
+        # iCloud's current web session exposes the DSID as X-APPLE-WEBAUTH-USER:
+        # "v=1:s=0:d=17230907310".
+        if name.lower() == "x-apple-webauth-user":
+            match = re.search(r"(?:^|:)d=([0-9]{6,20})(?:$|:)", value.strip('"'))
+            if match:
+                return match.group(1)
     # Fallback: any cookie ending/containing 'dsid' with numeric value
     for c in cookies:
         name = c.get("name", "").lower()
@@ -85,7 +91,7 @@ def wait_for_debugger(port: int, timeout: float = 15) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Open music.apple.com and steal dsid cookie.")
+    ap = argparse.ArgumentParser(description="Open iCloud and read the authenticated DSID.")
     ap.add_argument("browser", nargs="?", default="edge", choices=["edge"])
     ap.add_argument("--timeout", type=int, default=DEFAULT_DEADS)
     ap.add_argument("--headless-smoke", action="store_true", help="hidden probe only (debug)")
@@ -118,8 +124,8 @@ def main() -> int:
 
     try:
         driver.get(DSID_URL)
-        print("[*] opened music.apple.com/us/account, log in via the visible browser")
-        print("[*] polling cookies for dsid ...")
+        print("[*] opened iCloud, log in via the visible browser")
+        print("[*] polling X-APPLE-WEBAUTH-USER and dsid cookies ...")
         dsid = None
         cookie_dump = set()
         deadline = time.time() + args.timeout
