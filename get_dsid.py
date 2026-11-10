@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Get DSID: opens music.apple.com, waits for your manual login, and grabs
+"""Get DSID: opens music.apple.com, waits for your manual login, and reads
 the dsid cookie as soon as it appears.
 
   python get_dsid.py            # Edge (default), stay open up to 15 min
@@ -41,6 +41,14 @@ def extract_dsid(cookies) -> str | None:
     return None
 
 
+def browser_cookies(driver):
+    try:
+        # Chromium can return cookies across Apple domains, not just the current host.
+        return driver.execute_cdp_cmd("Network.getAllCookies", {}).get("cookies", [])
+    except Exception:
+        return driver.get_cookies()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Open music.apple.com and steal dsid cookie.")
     ap.add_argument("browser", nargs="?", default="edge", choices=["edge", "chrome"])
@@ -77,7 +85,7 @@ def main() -> int:
         deadline = time.time() + args.timeout
         while time.time() < deadline:
             try:
-                cookies = driver.get_cookies()
+                cookies = browser_cookies(driver)
             except Exception as e:
                 print(f"[!] {e!r} - browser closed? Try retry")
                 break
