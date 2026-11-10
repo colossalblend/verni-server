@@ -63,8 +63,10 @@ authoriation store, App-Store подпись появится для устан�
 
 Простой пользовательский способ:
 1. Зайди на `music.apple.com` в браузере, войди под своим Apple ID.
-2. F12 → Application (или Storage) → Cookies → найди cookie с именем `dsid`.
-3. Это и есть длинное число, его вставляешь вместо 99999999999 в код воркера.
+2. Запусти `python get_dsid.py edge`. Откроется браузер, скрипт ждёт cookie
+   `dsid`, потом сохраняет число в `dsid.txt`; пароль скрипт не читает.
+3. Скопируй `dsid.txt` в `worker\dsid.txt`. Воркер перечитывает DSID при
+   каждом новом подключении — для смены DSID не надо пересобирать `.exe`.
 
 Альтернативное: sniff трафика iTunes при первом логине (для канала thread
 kanxue 229601). Cookie-способ проще и рабочий.
@@ -74,26 +76,29 @@ kanxue 229601). Cookie-способ проще и рабочий.
 Раньше это делалось руками в Visual Studio. Теперь весь пайплайн стоит в
 `.github/workflows/build-worker.yml` этого репо:
 
-* клонировано `iOSAuthRuntime` (DLL с вызовами `iTunes.dll`: `KBSync*`,
+* клонируются `iOSAuthRuntime` (DLL с вызовами `iTunes.dll`: `KBSync*`,
   `AirFairSync*`) и `iOSAuthSingle` (TCP-сервер на фикс-порту **27987**,
   из `main.cpp`);
-* DSID не нужен в коде руками: если в репо задан секрет `DSID`, workflow
-  сам подменяет `99999999999ull` в `Exec.cpp` перед сборкой. Без секрета
-  соберётся заглушка (99999999999) — только для транспортного дыма, не
-  для авторизации;
-* собирается обе сборки: `msbuild /p:Platform=Win32 /p:Configuration=Release
+* workflow патчит `Exec.cpp` так, чтобы DSID читался из `dsid.txt` рядом с
+  `iOSAuthSingle.exe` при каждом новом соединении; DSID больше не зашит в exe;
+* собираются обе сборки: `msbuild /p:Platform=Win32 /p:Configuration=Release
   /p:PlatformToolset=v143` (в vcxproj прописан v142 — на GitHub-реджнере
   тестовый runtime ок в v143, олиб транспорт не меняет ABI);
 * артефакт `verni-worker-Win32`: `iOSAuthSingle.exe` + `iOSAuthRuntime.dll`,
-  просто скачай из Actions и закинь в каталог `verni-server\worker\`.
+  скачай из Actions и распакуй в каталог `verni-server\worker\`.
 
-Параллельно это же можно собрать и руками (`git clone` обеих реп, VS2022,
-Win32, Release, `SolutionDir` = родитель двух каталок) — но actions-ворк
-уже подставляет DSID и всё качает сам, так что руками явно необязательно.
+Пересобирать воркер при обновлении DSID не нужно: достаточно заменить
+`worker\dsid.txt`; уже запущенный воркер прочитает новое значение на следующем
+подключении. Сам DSID обычно постоянный идентификатор аккаунта, а не короткий
+токен с регулярным сроком действия. Если Apple повторно авторизует аккаунт и
+DSID изменится, запусти `get_dsid.py` ещё раз и замени файл.
 
 Порт воркера 27987 жёстко прописан в их `main.cpp`: лучше не трогать и
 использовать его всюду (`bridge.py`, `run_server.ps1` — дефолт уже 27987).
 Совсем менять не надо, но если захочешь — `set VERNI_WORKER_PORT=<твой>`.
+
+При обновлении самого кода воркера достаточно вручную запустить workflow
+`build-worker`; менять DSID и пересобирать из-за него не требуется.
 
 ## Шаг 4 — установка verni-server
 
@@ -115,7 +120,7 @@ SIG_LEN в bridge.py (0x15) — размер sig-блока в ответе во
 ## Шаг 5 — запуск
 
 ```
-# окно 1 — воркер, артефакт из GitHub Actions в .\worker\
+# окно 1 — воркер, артефакт из GitHub Actions и dsid.txt лежат в .\worker\
 .\worker\iOSAuthSingle.exe      # слушает фиксированный TCP 27987 (localhost)
 
 # окно 2
@@ -149,6 +154,8 @@ python .\test_server.py https://127.0.0.1:18766 $tok
 | `ipa-catalog.json` | ipa_sha256 → метка (по умолчанию пусто, режим permissive) |
 | `test_worker.py` | идеи fake-грам/пуffами, идёт в worker-порт |
 | `test_server.py` | 5/5 HTTP-сценариев без iPhone |
+| `get_dsid.py` | открывает Apple Music для входа и сохраняет cookie DSID |
+| `tools/patch_runtime.py` | патч сборки: DSID читается из файла на каждом соединении |
 | `run_server.ps1` | запуск uvicorn c .env.server и TLS |
 
 ## Отладка

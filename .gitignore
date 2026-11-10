@@ -5,6 +5,7 @@ verni-key.txt
 cert.pem
 key.pem
 key_udids.json
+dsid.txt
 worker/
 dist/
 srpackages/

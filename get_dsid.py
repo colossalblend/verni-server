@@ -4,7 +4,6 @@ the dsid cookie as soon as it appears.
 
   python get_dsid.py            # Edge (default), stay open up to 15 min
   python get_dsid.py chrome     # if chromium-based, another choice
-  python get_dsid.py <browser> --push  # also writes DSID GitHub secret
 
 Writes dsid.txt with the numeric dsid when found.
 
@@ -45,7 +44,6 @@ def extract_dsid(cookies) -> str | None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Open music.apple.com and steal dsid cookie.")
     ap.add_argument("browser", nargs="?", default="edge", choices=["edge", "chrome"])
-    ap.add_argument("--push", action="store_true", help="also write DSID GitHub secret (colossalblend/verni-server)")
     ap.add_argument("--timeout", type=int, default=DEFAULT_DEADS)
     ap.add_argument("--headless-smoke", action="store_true", help="hidden probe only (debug)")
     args = ap.parse_args()
@@ -92,22 +90,14 @@ def main() -> int:
             DSID_FILE.write_text(dsid, encoding="ascii")
             print(f"[ok] dsid found: {dsid}")
             print(f"[ok] saved to {DSID_FILE}")
+            worker_candidates = list((HERE / "worker").rglob("iOSAuthSingle.exe")) if (HERE / "worker").exists() else []
+            if worker_candidates:
+                worker_dir = worker_candidates[0].parent
+                (worker_dir / "dsid.txt").write_text(dsid, encoding="ascii")
+                print(f"[ok] copied to {worker_dir / 'dsid.txt'} (worker reads it on next connection)")
         else:
             print(f"[!] dsid not found in {args.timeout}s. All cookies seen: {cookie_dump or '<empty>'}")
             return 1
-        try:
-            if args.push:
-                import subprocess
-                res = subprocess.run(
-                    ["gh", "secret", "set", "DSID", "--repo", "colossalblend/verni-server", "--body", dsid],
-                    capture_output=True, text=True,
-                )
-                if res.returncode == 0:
-                    print("[ok] pushed to GitHub secret DSID")
-                else:
-                    print(f"[!] gh failed: {res.stderr}")
-        except Exception as e:
-            print(f"[!] push issue: {e!r}")
         return 0
     finally:
         try:

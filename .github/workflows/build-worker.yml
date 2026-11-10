@@ -8,9 +8,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      DSID: ${{ secrets.DSID }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Fetch iOSAuthRuntime
         shell: cmd
         run: git clone --depth 1 https://github.com/iOS-Auth/iOSAuthRuntime iOSAuthRuntime
@@ -19,22 +19,11 @@ jobs:
         shell: cmd
         run: git clone --depth 1 https://github.com/iOS-Auth/iOSAuthSingle iOSAuthSingle
 
-      - name: Insert DSID from repo secret (placeholder 99999999999 otherwise)
+      - name: Patch Exec.cpp to read DSID at runtime (dsid.txt next to exe)
         shell: pwsh
         run: |
-          $exec = Join-Path $PWD 'iOSAuthRuntime\Exec.cpp'
-          if (-not $env:DSID) {
-            Write-Warning 'Secret DSID is not set - building placeholder worker (transport smoke only, no real authorization)'
-            exit 0
-          }
-          $dsid = $env:DSID.Trim()
-          if ($dsid -notmatch '^\d{1,18}$') { Write-Error 'DSID must be digits'; exit 1 }
-          (Get-Content $exec -Raw) -replace '99999999999ull', "$dsid" + 'ull' | Set-Content $exec -NoNewline
-          if (-not (Select-String -Path $exec -Pattern ([regex]::Escape("$dsid" + 'ull')) -Quiet)) {
-            Write-Error 'DSID substitution failed'
-            exit 1
-          }
-          Write-Host "DSID inserted: $($dsid.Substring(0, [Math]::Min(4, $dsid.Length)))****"
+          python tools/patch_runtime.py iOSAuthRuntime/Exec.cpp
+          if ($LASTEXITCODE -ne 0) { Write-Error 'runtime-dsid patch failed'; exit 1 }
 
       - uses: microsoft/setup-msbuild@v2
 
