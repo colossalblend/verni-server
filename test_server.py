@@ -62,7 +62,7 @@ def main() -> int:
     print(f"abort/ghost    -> {status} {j}")
     good += status == 200 and j.get("status") == "aborted"
 
-    print(f"\n{'ok' if good == 5 else 'проблемы'}: {good}/5")
+    print(f"\n{'ok' if good == 5 else 'FAIL'}: {good}/5")
     return 0 if good == 5 else 1
 
 

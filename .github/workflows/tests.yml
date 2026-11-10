@@ -12,6 +12,7 @@ jobs:
       VERNI_WORKER_PORT: '5555'
       VERNI_WORKER_HOST: '127.0.0.1'
       VERNI_SESSION_TTL: '900'
+      PYTHONIOENCODING: 'utf-8'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

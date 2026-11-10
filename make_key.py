@@ -114,9 +114,9 @@ def gen_key(days: int, out: Path, endpoint: str = "") -> str:
     env_line = f"VERNI_TOKEN={token}\n"
     ENV_TXT.write_text(env_line, encoding="ascii")
     when = datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat()
-    print(f"[ok] ключ: {out}")
-    print(f"     endpoint https://{endpoint}:18766, до {when}")
-    print(f"[ok] {ENV_TXT} (токен для server.py)")
+    print(f"[ok] key: {out}")
+    print(f"     endpoint https://{endpoint}:18766, valid to {when}")
+    print(f"[ok] {ENV_TXT} (token for server.py)")
 
 
 def main() -> None:
