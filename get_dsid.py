@@ -14,8 +14,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
+import socket
+import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 DSID_URL = "https://music.apple.com/us/account"
@@ -49,32 +54,67 @@ def browser_cookies(driver):
         return driver.get_cookies()
 
 
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def edge_path() -> str:
+    candidates = [
+        shutil.which("msedge.exe"),
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    raise SystemExit("Microsoft Edge was not found")
+
+
+def wait_for_debugger(port: int, timeout: float = 15) -> None:
+    deadline = time.time() + timeout
+    url = f"http://127.0.0.1:{port}/json/version"
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1):
+                return
+        except OSError:
+            time.sleep(0.25)
+    raise SystemExit("Edge remote debugging endpoint did not start")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Open music.apple.com and steal dsid cookie.")
-    ap.add_argument("browser", nargs="?", default="edge", choices=["edge", "chrome"])
+    ap.add_argument("browser", nargs="?", default="edge", choices=["edge"])
     ap.add_argument("--timeout", type=int, default=DEFAULT_DEADS)
     ap.add_argument("--headless-smoke", action="store_true", help="hidden probe only (debug)")
     args = ap.parse_args()
 
     try:
         from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service as ChromeSVC
-        from selenium.webdriver.edge.service import Service as EdgeSVC
     except ImportError:
         raise SystemExit("pip install selenium") from None
 
-    if args.browser == "edge":
-        opts = webdriver.EdgeOptions()
-        opts.add_argument("start-maximized")
-        if args.headless_smoke:
-            opts.add_argument("--headless=new")
-        driver = webdriver.Edge(service=EdgeSVC(), options=opts)
-    else:
-        opts = webdriver.ChromeOptions()
-        opts.add_argument("start-maximized")
-        if args.headless_smoke:
-            opts.add_argument("--headless=new")
-        driver = webdriver.Chrome(service=ChromeSVC(), options=opts)
+    if args.headless_smoke:
+        raise SystemExit("headless-smoke is disabled: use a visible normal Edge window for Apple login")
+
+    port = free_port()
+    profile_dir = Path(tempfile.mkdtemp(prefix="verni-edge-"))
+    browser = subprocess.Popen([
+        edge_path(),
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--start-maximized",
+        DSID_URL,
+    ])
+    wait_for_debugger(port)
+
+    opts = webdriver.EdgeOptions()
+    opts.add_experimental_option("debuggerAddress", f"127.0.0.1:{port}")
+    driver = webdriver.Edge(options=opts)
 
     try:
         driver.get(DSID_URL)
@@ -110,6 +150,11 @@ def main() -> int:
     finally:
         try:
             driver.quit()
+        except Exception:
+            pass
+        try:
+            browser.terminate()
+            browser.wait(timeout=5)
         except Exception:
             pass
 
