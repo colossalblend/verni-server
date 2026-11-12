@@ -103,6 +103,8 @@ def main() -> int:
     ap.add_argument("--itunes-wait", type=int, default=15 * 60, help="сколько ждать SC Info, с")
     ap.add_argument("--skip-itunes", action="store_true")
     ap.add_argument("--skip-browser", action="store_true")
+    ap.add_argument("--code-file", default=None,
+                    help="файл-канал для кода 2FA при фоновом запуске")
     ap.add_argument("--no-remember", action="store_true",
                     help="не сохранять пароль в secrets.dat (перевыпуск будет ручной)")
     args = ap.parse_args()
@@ -121,7 +123,8 @@ def main() -> int:
 
     ok = True
     if not args.skip_browser:
-        dsid = apple_session.run_login(args.email, password, timeout=args.timeout)
+        dsid = apple_session.run_login(args.email, password, timeout=args.timeout,
+                                       code_file=args.code_file)
         ok = dsid is not None
         if dsid:
             apple_session.write_dsid(dsid, args.email)

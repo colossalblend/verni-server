@@ -291,11 +291,17 @@ def fill_2fa(driver, code: str) -> bool:
             inputs[0].send_keys(code)
         time.sleep(rand(0.6, 1.2))
         try:
-            for b in driver.find_elements("css selector", "button"):
-                if (b.text or "").strip().lower() in ("continue", "продолжить", "submit") \
-                        and b.is_displayed():
-                    b.click()
-                    break
+            for sel in ("button[type=submit]", "button"):
+                for b in driver.find_elements("css selector", sel):
+                    t = (b.text or "").strip().lower()
+                    if b.is_displayed() and (t in ("continue", "продолжить", "submit", "отправить")
+                                             or sel.endswith("type=submit]")):
+                        _js_click(b)
+                        return True
+        except Exception:
+            pass
+        try:
+            inputs[-1].send_keys("\n")  # Enter как fallback
         except Exception:
             pass
         return True
@@ -305,15 +311,178 @@ def fill_2fa(driver, code: str) -> bool:
 
 # ---------------- вход ----------------
 
-def run_login(email: str, password: str, timeout: float = 15 * 60,
-              log=print, ask_2fa: bool = True,
-              profile_dir: Path | None = None,
-              do_warmup: bool = True) -> str | None:
-    """Полный вход. Возвращает dsid или None. 2FA — отдельным запросом.
+def _log(msg: str) -> None:
+    print(msg, flush=True)
 
-    ask_2fa=True: при появлении экрана проверки скрипт просит код в консоли
-    и сам его подставляет; Enter без кода -> завершай руками в окне.
-    ask_2fa=False (демо-режим): просто ждём, пока вход завершится в окне.
+
+def _safe_page(driver) -> str:
+    try:
+        return (driver.page_source or "").lower()
+    except Exception:
+        return ""
+
+
+def _frame_scan(driver, pred, timeout: float, depth: int = 0):
+    """Ищет первый фрейм (или top), где pred(driver) истинно; остаётся
+    переключенным туда. Возвращает дескриптор ('top'/'self'/element) или None.
+    depth ограничивает вложенность iframe."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        if _safe_pred(driver, pred):
+            return "top"
+        try:
+            frames = driver.find_elements("tag name", "iframe")
+        except Exception:
+            frames = []
+        for f in frames:
+            try:
+                driver.switch_to.frame(f)
+                if _safe_pred(driver, pred):
+                    return f
+                if depth < 2:
+                    try:
+                        inner = driver.find_elements("tag name", "iframe")
+                    except Exception:
+                        inner = []
+                    for g in inner:
+                        try:
+                            driver.switch_to.frame(g)
+                            if _safe_pred(driver, pred):
+                                return g
+                            driver.switch_to.parent_frame()
+                        except Exception:
+                            driver.switch_to.parent_frame()
+                driver.switch_to.default_content()
+            except Exception:
+                driver.switch_to.default_content()
+        time.sleep(0.6)
+    return None
+
+
+def _safe_pred(driver, pred) -> bool:
+    try:
+        return bool(pred(driver))
+    except Exception:
+        return False
+
+
+def _email_visible(driver) -> bool:
+    for sel in ("#account_name_text_field", "input[type=email]", "input[name=accountName]"):
+        try:
+            for el in driver.find_elements("css selector", sel):
+                if el.is_displayed():
+                    return True
+        except Exception:
+            pass
+    return False
+
+
+def _pw_visible(driver) -> bool:
+    try:
+        for el in driver.find_elements("css selector", "input[type=password]"):
+            if el.is_displayed():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _code_visible(driver) -> bool:
+    try:
+        for el in driver.find_elements("css selector",
+                                       "input[id*=code], input[type=tel], input[autocomplete*=one-time]"):
+            if el.is_displayed():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _js_click(el) -> None:
+    try:
+        el.click()
+    except Exception:
+        try:
+            el.parent.execute_script("arguments[0].click()", el)
+        except Exception:
+            pass
+
+
+def sign_in_click(driver, log=_log) -> bool:
+    """Клик по кнопке входа: a/button/div/span по тексту (shadow DOM часто
+    прячет кнопку от обычных селекторов), затем проверка новых вкладок."""
+    xpaths = [
+        "//*[self::a or self::button or @role='button'][contains(translate(., 'SINGVOЙР', 'singvoйр'),'sign in')]",
+        "//*[self::a or self::button or @role='button'][contains(translate(., 'АВОЙР', 'авойр'),'войти')]",
+        "//*[contains(@class,'sign-in') or contains(@id,'sign-in')][self::div or self::span or self::a or self::button]",
+    ]
+    end = time.time() + 10
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for el in driver.find_elements("xpath", xp):
+                    t = (el.text or "").strip().lower()
+                    if t and ("sign" in t or "войти" in t or "вход" in t) and el.is_displayed():
+                        _js_click(el)
+                        log(f"[*] нажал кнопку входа ('{t[:40]}')")
+                        human_pause(1.5, 3.0)
+                        try:
+                            handles = driver.window_handles
+                            if len(handles) > 1:
+                                driver.switch_to.window(handles[-1])
+                                log("[*] форма открылась в новой вкладке")
+                        except Exception:
+                            pass
+                        return True
+            except Exception:
+                pass
+        time.sleep(0.7)
+    return False
+
+
+def poll_code_file(code_file: str | None, timeout: float = 300,
+                   log=_log) -> str | None:
+    """Ждёт код 2FA в файле (канал для фонового запуска) или из консоли."""
+    if not code_file:
+        try:
+            return input().strip() or None
+        except EOFError:
+            return None
+    cf = Path(code_file)
+    if cf.exists():
+        cf.unlink()
+    end = time.time() + timeout
+    log(f"      жду код в {cf} ({int(timeout)}s) ...")
+    while time.time() < end:
+        try:
+            if cf.exists():
+                code = cf.read_text(encoding="ascii", errors="ignore").strip()
+                if code.isdigit() and len(code) >= 6:
+                    try:
+                        cf.unlink()
+                    except Exception:
+                        pass
+                    return code
+        except Exception:
+            pass
+        time.sleep(1.0)
+    return None
+
+
+def run_login(email: str, password: str, timeout: float = 15 * 60,
+              log=_log, ask_2fa: bool = True,
+              profile_dir: Path | None = None,
+              do_warmup: bool = True,
+              code_file: str | None = None) -> str | None:
+    """Полный вход. Возвращает dsid или None.
+
+    ask_2fa=True: при экране проверки скрипт берёт код (code_file — канал
+    для фонового запуска, иначе консоль) и сам его подставляет по-живому.
+    ask_2fa=False (демо-режим): просто ждём завершения входа в окне.
     """
     profile = profile_dir or (PROFILES_DIR / safe_name(email))
     port = free_port()
@@ -323,60 +492,73 @@ def run_login(email: str, password: str, timeout: float = 15 * 60,
     try:
         if do_warmup:
             warmup(driver, log)
-        log("[*] автологин: ищу форму входа ...")
-        if not click_text(driver, ("sign in", "войти")):
+        log("[*] автологин: ищу кнопку входа ...")
+        if not sign_in_click(driver, log):
             log("[i] кнопка входа не найдена — возможно, уже залогинены")
-        human_pause(1.5, 3.0)
-        filled = False
-        if enter_idmsa_frame(driver):
-            email_el = visible(driver, ["#account_name_text_field",
-                                        "input[type=email]", "input[name=accountName]"])
-            if email_el is not None:
-                email_el.clear()
-                human_type(email_el, email)
-                btn = visible(driver, ["#sign-in", "button[type=submit]"])
-                if btn is not None:
-                    btn.click()
-                    log("[*] email отправлен, жду поле пароля ...")
-                    time.sleep(rand(2.0, 3.5))
-                    pw_el = visible(driver, ["input[type=password]",
-                                             "#password_text_field"], timeout=12)
-                    if pw_el is not None:
-                        pw_el.clear()
-                        human_type(pw_el, password)
-                        btn = visible(driver, ["#sign-in", "button[type=submit]"])
-                        if btn is not None:
-                            btn.click()
-                            filled = True
-                            log("[*] пароль отправлен")
-                            human_pause(2.0, 4.0)
-        if not filled:
-            log("[!] автозаполнение не удалось — дологинься руками в открытом окне")
-            log("    скрипт ждёт cookie входа, не закрывай окно")
+        # форма email: в любом фрейме (idmsa-iframe или прямо в DOM)
+        log("[*] ищу форму ввода email ...")
+        if _frame_scan(driver, _email_visible, timeout=40) is None:
+            log("[!] форма email не найдена — пробую ещё раз кнопку входа")
+            sign_in_click(driver, log)
+            if _frame_scan(driver, _email_visible, timeout=25) is None:
+                log("[!] форма email не найдена — введи данные руками в окне")
+        email_el = visible(driver, ["#account_name_text_field",
+                                    "input[type=email]", "input[name=accountName]"], timeout=6)
+        if email_el is not None:
+            email_el.clear()
+            human_type(email_el, email)
+            btn = visible(driver, ["#sign-in", "button[type=submit]"])
+            if btn is not None:
+                _js_click(btn)
+            log("[*] email введён, жду поле пароля ...")
+        else:
+            log("[!] поле email не нашёл — введи его в окне, дальше скрипт подхватит")
+        # поле пароля: может появиться в этом же или другом фрейме
+        if _frame_scan(driver, _pw_visible, timeout=35) is None:
+            log("[!] поле пароля не появилось")
+        pw_el = visible(driver, ["input[type=password]", "#password_text_field"], timeout=6)
+        if pw_el is not None:
+            pw_el.clear()
+            human_type(pw_el, password)
+            btn = visible(driver, ["#sign-in", "button[type=submit]"])
+            if btn is not None:
+                _js_click(btn)
+            log("[*] пароль введён, отправлен")
+            human_pause(2.0, 4.0)
+        else:
+            log("[!] поле пароля не нашёл — введи его в окне, дальше скрипт подхватит")
 
         deadline = time.time() + timeout
-        prompted = False
+        handled_2fa = False
         while time.time() < deadline:
             dsid = extract_dsid(browser_cookies(driver))
             if dsid:
                 break
-            if ask_2fa and not prompted and detect_2fa(driver):
-                prompted = True
-                log("")
-                log("[2FA] нужна двухфакторка — ОТДЕЛЬНЫЙ ЗАПРОС:")
-                log("      возьми код с доверенного устройства")
-                try:
-                    code = input("      код (Enter = завершу в окне сам): ").strip()
-                except EOFError:
-                    code = ""
-                if code.isdigit() and len(code) >= 6:
-                    back_to_top(driver)
-                    if enter_idmsa_frame(driver, timeout=8) or True:
-                        ok = fill_2fa(driver, code)
-                        log("[*] код подставлен" if ok
-                            else "[!] не подставил — введи код в окне руками")
+            # ошибка входа?
+            page = _safe_page(driver)
+            if page and any(m in page for m in ("incorrect password", "неверный пароль",
+                                                "password you entered", "invalid user")):
+                log("[!] Apple отклонил данные (пароль/логин?) — проверь и перезапусти")
+                break
+            # 2FA экран: ищем в любом фрейме
+            if ask_2fa and not handled_2fa:
+                ctx = None
+                if _code_visible(driver):
+                    ctx = "cur"
                 else:
-                    log("[i] жду завершения входа в окне ...")
+                    ctx = _frame_scan(driver, _code_visible, timeout=4)
+                if ctx is not None:
+                    handled_2fa = True
+                    log("")
+                    log("[2FA] экран проверки найден — ОТДЕЛЬНЫЙ ЗАПРОС:")
+                    log("      скажи код (в окно скрипту сам подставит)")
+                    code = poll_code_file(code_file, timeout=min(300, max(60, deadline - time.time())), log=log)
+                    if code:
+                        ok = fill_2fa(driver, code)
+                        log("[*] код подставлен, отправляю" if ok
+                            else "[!] не подставил — введи код в окне руками")
+                    else:
+                        log("[i] код не получен — введи его в окне руками")
             time.sleep(1.5)
         if dsid:
             log("[ok] вход выполнен, dsid получен")

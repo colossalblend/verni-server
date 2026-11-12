@@ -95,6 +95,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Open iCloud and read the authenticated DSID.")
     ap.add_argument("browser", nargs="?", default="edge", choices=["edge"])
     ap.add_argument("--timeout", type=int, default=DEFAULT_DEADS)
+    ap.add_argument("--account", default="", help="email to upsert into accounts.json (multi-account)")
     ap.add_argument("--headless-smoke", action="store_true", help="hidden probe only (debug)")
     args = ap.parse_args()
 
@@ -154,6 +155,15 @@ def main() -> int:
             print(json.dumps({
                 "you@example.com": {"display_name": "You", "dsid": int(dsid)},
             }, indent=2))
+            if args.account:
+                acc_path = HERE / "accounts.json"
+                try:
+                    acc = json.loads(acc_path.read_text(encoding="utf-8")) if acc_path.exists() else {}
+                except Exception:
+                    acc = {}
+                acc[args.account] = {"display_name": args.account.split("@")[0], "dsid": int(dsid)}
+                acc_path.write_text(json.dumps(acc, indent=2), encoding="utf-8")
+                print(f"[ok] accounts.json updated: {args.account} -> dsid {dsid}")
         else:
             print(f"[!] dsid not found in {args.timeout}s. All cookies seen: {cookie_dump or '<empty>'}")
             return 1
