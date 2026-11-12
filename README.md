@@ -27,6 +27,74 @@ Verni-Desktop после `result` командой `exchange` гонит FairPla
 `Grappa → afsync.rs + afsync.rs.sig`. На телефоне появится `<DSID>` в
 authoriation store, App-Store подпись появится для установок ipa.
 
+## Безопасность сервера
+
+Что enforced на сервере (не клиенте):
+
+* **Токены**: `VERNI_TOKENS="tok1,tok2"` — по токену на телефон; сессии,
+  привязка UDID и слот `begin` изолированы по токену. Один `VERNI_TOKEN`
+  тоже работает (back-compat). Проверка `secrets.compare_digest`.
+* **Сессии**: `complete`/`abort` работают только со своей сессией — чужой
+  `session_id` даёт `404 unknown_session` (IDOR/BOLA закрыт; abort чужой
+  сессии — безопасный no-op без раскрытия существования).
+* **Rate limiting**: 120 req/мин на IP (sliding window, `VERNI_RATE_LIMIT`),
+  429 `owner_generator_busy`; IP с 10 неудачными авторизациями за 10 мин
+  блокируется на окно (`VERNI_AUTH_FAIL_LIMIT/WINDOW`).
+* **Валидация**: строгая типизация полей (bool не проходит за int), лимит
+  тела 2 MB, лимиты размеров cert/rq/deviceGrappa, base64 strict, deny по
+  умолчанию. Резервация слота до обращения к воркеру — гонка begin'ов
+  одного токена даёт мгновенный 409, двойных сессий нет.
+* **Конфиг**: `VERNI_MAX_SESSIONS=64`, `VERNI_WEBHOOK_URL` — POST JSON при
+  отказе/восстановлении FairPlay-интеграции (без секретов, дедуп 15–30 мин).
+* **Здоровье интеграции**: `GET /v1/health` (токен) — состояние воркера
+  (UNKNOWN/HEALTHY/DEGRADED/RECOVERING/FAILED), последние ошибки, метрики.
+  Мёртвый воркер автоматически respawn'ится (backoff+jitter, single-flight);
+  проблемы iTunes-стороны (SC Info/авторизация) автоматически не чинятся —
+  только уведомление админу. CAPTCHA/2FA не обходятся никогда.
+* **Логи**: JSON-строки в `srvlog.txt` (5 MB × 3 ротация) + консоль:
+  ts, event, rid, ip, path, status, ms. Токены и тела запросов не пишутся.
+* **Файлы**: `setup.ps1` ужимает ACL на `.env.server`/`key.pem`/
+  `verni-key.txt` (SYSTEM + Administrators + текущий юзер); JSON-стейт
+  пишется атомарно (tmp + os.replace).
+
+Проверяется батареей `test_security.py` (34 проверки: auth, IDOR, replay,
+race begin, rate limit, lockout, отсутствие утечки токена в логах) + SCA
+`pip-audit` в CI (job `sca`).
+
+## Быстрая установка на сервер (минимум движений)
+
+На чистой Windows-машине (VPS или этот ПК):
+
+```powershell
+git clone https://github.com/colossalblend/verni-server
+cd verni-server
+powershell -ExecutionPolicy Bypass -File setup.ps1 -ServerHost <IP-или-DNS> [-Task]
+```
+
+`setup.ps1` сам: ставит Python и зависимости, генерит cert/key/token и
+`verni-key.txt`, качает последний воркер из GitHub Actions, кладёт `dsid.txt`
+рядом с exe, открывает порт 18766 в фаерволе. С `-Task` регистрирует
+автозапуск через Планировщик (SYSTEM, при загрузке).
+
+Остаются только Apple-шаги, которые автоматизировать нельзя:
+
+```powershell
+.\install_itunes.ps1        # скачать + тихо установить iTunes 12.10.11 32-bit
+```
+
+1. Открой iTunes один раз, войди под своим Apple ID, `Store → Authorize This
+   Computer` (появятся `SC Info.sidb/sidd`).
+2. `accounts.json` — реальные email + `dsid` по каждому аккаунту: на машине с
+   браузером запусти `python get_dsid.py edge --account you@example.com`
+   (после входа скрипт сам пропишет аккаунт в `accounts.json`), затем перенеси
+   `accounts.json` на сервер.
+3. Старт: `.\run_server.ps1` — воркер поднимается сам (сервер spawns
+   `iOSAuthSingle.exe`, если порт закрыт). Перезапуск при падении — тоже сам.
+
+Ключ для телефона: `verni-key.txt` (импорт через Verni-Desktop). Логи:
+`.\srvlog.txt` не нужен — uvicorn пишет в консоль задачи Планировщика
+(или запусти вручную и смотри вывод).
+
 ## Шаг 0 — требования
 
 * Windows 10/11 x64 (не ARM) — сам server.py безразличен к битности, но

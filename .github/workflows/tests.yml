@@ -21,17 +21,21 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Syntax gate
-        run: python -m py_compile server.py bridge.py make_key.py test_worker.py test_server.py test_flow.py fake_worker.py tools/patch_runtime.py get_dsid.py
+        run: python -m py_compile server.py health.py bridge.py make_key.py test_worker.py test_server.py test_flow.py test_security.py fake_worker.py tools/patch_runtime.py get_dsid.py
       - name: Generate TLS + verni key (localhost)
         run: |
           python make_key.py cert 127.0.0.1 --days 2
           python make_key.py key --days 2
-      - name: Launch fake worker and server
+      - name: Launch fake worker and server (two tokens)
         shell: pwsh
         run: |
           Start-Process python -ArgumentList "$PWD\fake_worker.py","5555" -WindowStyle Hidden
           Start-Sleep 2
-          $env:VERNI_TOKEN = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
+          $tA = python -c "import secrets;print(secrets.token_hex(32))"
+          $tB = python -c "import secrets;print(secrets.token_hex(32))"
+          Set-Content tokA.txt $tA -NoNewline
+          Set-Content tokB.txt $tB -NoNewline
+          $env:VERNI_TOKENS = "$tA,$tB"
           Start-Process python -ArgumentList "-m","uvicorn","server:app","--host","127.0.0.1","--port","18766","--ssl-certfile","$PWD\cert.pem","--ssl-keyfile","$PWD\key.pem" -WindowStyle Hidden
           Start-Sleep 6
       - name: Worker framing smoke
@@ -40,10 +44,28 @@ jobs:
       - name: HTTP contract 5/5
         shell: pwsh
         run: |
-          $tok = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
-          python test_server.py https://127.0.0.1:18766 $tok
+          $tok = Get-Content tokA.txt -Raw
+          python test_server.py https://127.0.0.1:18766 $tok.Trim()
       - name: Full begin->complete->abort flow
         shell: pwsh
         run: |
-          $tok = ((Get-Content .env.server -Raw).Trim()).Split('=',2)[1]
-          python test_flow.py https://127.0.0.1:18766 $tok
+          $tok = Get-Content tokA.txt -Raw
+          python test_flow.py https://127.0.0.1:18766 $tok.Trim()
+      - name: Security battery (auth, IDOR, replay, race, rate limit, lockout, leak scan)
+        shell: pwsh
+        run: |
+          $tA = (Get-Content tokA.txt -Raw).Trim()
+          $tB = (Get-Content tokB.txt -Raw).Trim()
+          python test_security.py https://127.0.0.1:18766 $tA $tB
+
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependency audit (SCA)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt --strict
