@@ -311,8 +311,30 @@ def fill_2fa(driver, code: str) -> bool:
 
 # ---------------- вход ----------------
 
+AUTH_COOKIE_NAMES = (
+    "X-APPLE-WEBAUTH-USER", "X-APPLE-WEBAUTH-TOKEN", "X-APPLE-WEBAUTH-VARIANT",
+    "X-APPLE-DS-WEB-SESSION-TOKEN", "X-APPLE-DS-WEB-SESSION-HTTP",
+    "X-APPLE-DS-WEB-STAT", "X-APPLE-DS-ID", "myacinfo",
+)
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def clear_auth_cookies(driver, log=_log) -> None:
+    """Убивает старые auth-cookies: любые dsid после этого — только свежий вход."""
+    n = 0
+    for name in AUTH_COOKIE_NAMES:
+        for domain in (".icloud.com", "icloud.com", ".apple.com", "apple.com",
+                       "idmsa.apple.com", "idmsa.apple.com.".rstrip(".")):
+            try:
+                driver.execute_cdp_cmd("Network.deleteCookies",
+                                       {"name": name, "domain": domain})
+                n += 1
+            except Exception:
+                pass
+    log(f"[*] старые auth-cookies почищены ({n})")
 
 
 def _safe_page(driver) -> str:
@@ -444,6 +466,103 @@ def sign_in_click(driver, log=_log) -> bool:
     return False
 
 
+def _trust_visible(driver) -> bool:
+    try:
+        for b in driver.find_elements("xpath",
+                "//button[contains(translate(., 'TRUSTДОВЕРЯ', 'trustдоверя'),'trust') or "
+                "contains(translate(., 'TRUSTДОВЕРЯ', 'trustдоверя'),'доверя')]"):
+            if b.is_displayed():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _click_trust(driver) -> bool:
+    try:
+        for b in driver.find_elements("xpath",
+                "//button[contains(translate(., 'TRUSTДОВЕРЯ', 'trustдоверя'),'trust') or "
+                "contains(translate(., 'TRUSTДОВЕРЯ', 'trustдоверя'),'доверя')]"):
+            if b.is_displayed() and "not" not in (b.text or "").lower() \
+                    and "не" not in (b.text or "").lower():
+                _js_click(b)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _has_session(driver) -> bool:
+    """Настоящий вход = dsid + сессионный токен (появляется после 2FA)."""
+    for c in browser_cookies(driver):
+        if str(c.get("name", "")).lower() == "x-apple-ds-web-session-token" \
+                and str(c.get("value", "")).strip():
+            return True
+    return False
+
+
+def _url_auth(driver) -> bool:
+    try:
+        u = (driver.current_url or "").lower()
+    except Exception:
+        return False
+    return "idmsa" in u or "idmswebauth" in u
+
+
+def _auth_form_visible(driver) -> bool:
+    """Экран входа/2FA ещё висит (в любом фрейме, включая top-level редирект)."""
+    def _forms() -> bool:
+        return _email_visible(driver) or _pw_visible(driver) or _code_visible(driver)
+    try:
+        driver.switch_to.default_content()
+        if _forms():
+            return True
+        for f in driver.find_elements("tag name", "iframe"):
+            try:
+                driver.switch_to.frame(f)
+                if _forms():
+                    return True
+                for g in driver.find_elements("tag name", "iframe"):
+                    try:
+                        driver.switch_to.frame(g)
+                        if _forms():
+                            return True
+                        driver.switch_to.parent_frame()
+                    except Exception:
+                        driver.switch_to.parent_frame()
+                driver.switch_to.default_content()
+            except Exception:
+                driver.switch_to.default_content()
+    except Exception:
+        pass
+    return _url_auth(driver)
+
+
+def _two_fa_screen(driver) -> bool:
+    if _code_visible(driver):
+        return True
+    page = _safe_page(driver)
+    markers = ("verification", "verify your identity", "enter the code",
+               "trusted device", "проверк", "введите код", "доверенного устройства")
+    return any(m in page for m in markers)
+
+
+def _choose_code_option(driver) -> bool:
+    """Экран выбора способа 2FA: жмём 'ввести код' / 'enter code'."""
+    try:
+        for tag in ("a", "button", "div", "span"):
+            for el in driver.find_elements("tag name", tag):
+                t = (el.text or "").strip().lower()
+                if t and ("код" in t or "code" in t) \
+                        and ("введи" in t or "ввести" in t or "enter" in t) \
+                        and el.is_displayed():
+                    _js_click(el)
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def poll_code_file(code_file: str | None, timeout: float = 300,
                    log=_log) -> str | None:
     """Ждёт код 2FA в файле (канал для фонового запуска) или из консоли."""
@@ -492,6 +611,7 @@ def run_login(email: str, password: str, timeout: float = 15 * 60,
     try:
         if do_warmup:
             warmup(driver, log)
+        clear_auth_cookies(driver, log)
         log("[*] автологин: ищу кнопку входа ...")
         if not sign_in_click(driver, log):
             log("[i] кнопка входа не найдена — возможно, уже залогинены")
@@ -529,10 +649,13 @@ def run_login(email: str, password: str, timeout: float = 15 * 60,
             log("[!] поле пароля не нашёл — введи его в окне, дальше скрипт подхватит")
 
         deadline = time.time() + timeout
-        handled_2fa = False
+        announced = False
+        filled = False
+        filled_at = 0.0
+        trusted_once = False
         while time.time() < deadline:
             dsid = extract_dsid(browser_cookies(driver))
-            if dsid:
+            if dsid and _has_session(driver) and not _auth_form_visible(driver):
                 break
             # ошибка входа?
             page = _safe_page(driver)
@@ -540,30 +663,73 @@ def run_login(email: str, password: str, timeout: float = 15 * 60,
                                                 "password you entered", "invalid user")):
                 log("[!] Apple отклонил данные (пароль/логин?) — проверь и перезапусти")
                 break
-            # 2FA экран: ищем в любом фрейме
-            if ask_2fa and not handled_2fa:
-                ctx = None
-                if _code_visible(driver):
-                    ctx = "cur"
-                else:
-                    ctx = _frame_scan(driver, _code_visible, timeout=4)
-                if ctx is not None:
-                    handled_2fa = True
+            # доверять этому браузеру?
+            if not trusted_once and _trust_visible(driver):
+                trusted_once = True
+                if _click_trust(driver):
+                    log("[*] нажал 'доверять браузеру' — сессия проживёт дольше")
+                    human_pause(2.0, 3.5)
+            # 2FA: экран может быть в любом фрейме; сначала анонс, потом ввод
+            if ask_2fa and not filled:
+                if not announced and _two_fa_screen(driver):
+                    announced = True
+                    try:
+                        names = ",".join(sorted({str(c.get("name"))
+                                                 for c in browser_cookies(driver)}))
+                        log(f"[*] cookies на экране 2FA: {names[:400]}")
+                    except Exception:
+                        pass
                     log("")
-                    log("[2FA] экран проверки найден — ОТДЕЛЬНЫЙ ЗАПРОС:")
-                    log("      скажи код (в окно скрипту сам подставит)")
-                    code = poll_code_file(code_file, timeout=min(300, max(60, deadline - time.time())), log=log)
-                    if code:
-                        ok = fill_2fa(driver, code)
-                        log("[*] код подставлен, отправляю" if ok
-                            else "[!] не подставил — введи код в окне руками")
-                    else:
-                        log("[i] код не получен — введи его в окне руками")
+                    log("[2FA] экран проверки — ОТДЕЛЬНЫЙ ЗАПРОС:")
+                    log("      скажи код (я подставлю и отправлю сам)")
+                    if not _code_visible(driver):
+                        _choose_code_option(driver)
+                    human_pause(1.0, 2.0)
+                if announced:
+                    if not _code_visible(driver):
+                        _choose_code_option(driver)
+                        _frame_scan(driver, _code_visible, timeout=3)
+                    if _code_visible(driver):
+                        remaining = max(30, deadline - time.time())
+                        code = poll_code_file(code_file,
+                                              timeout=min(300, remaining), log=log)
+                        if code:
+                            ok = fill_2fa(driver, code)
+                            log("[*] код подставлен, отправляю" if ok
+                                else "[!] не подставил — введи код в окне руками")
+                            if ok:
+                                filled = True
+                                filled_at = time.time()
+                                human_pause(2.5, 4.5)
+                        else:
+                            log("[i] код не получен — введи его в окне руками")
+            if filled and _code_visible(driver) and time.time() - filled_at > 25:
+                log("[i] поле кода всё ещё видно — код не принят, жду новый")
+                filled = False
             time.sleep(1.5)
         if dsid:
-            log("[ok] вход выполнен, dsid получен")
+            # подтверждение: перезагружаем icloud, cookies и форма входа должны исчезнуть
+            try:
+                driver.switch_to.default_content()
+                driver.get(DSID_URL)
+                time.sleep(rand(5.0, 8.0))
+                dsid2 = extract_dsid(browser_cookies(driver))
+                confirmed = bool(dsid2) and _has_session(driver) \
+                    and not _auth_form_visible(driver)
+            except Exception:
+                confirmed = False
+            if confirmed:
+                dsid = dsid2
+                log(f"[ok] вход выполнен и подтверждён, dsid {dsid}")
+            else:
+                log("[!] сессия не подтверждена после перезагрузки (2FA не пройдена?)")
+                dsid = None
         else:
             log(f"[!] dsid не получен за {int(timeout)}s")
+        # окно не рвём мгновенно — дай себе осмотреться
+        hold = 10 if dsid else 20
+        log(f"[*] окно браузера закрою через {hold}s")
+        time.sleep(hold)
         return dsid
     finally:
         try:
