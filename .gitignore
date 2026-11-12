@@ -11,4 +11,7 @@ dist/
 srpackages/
 srvlog.txt
 .server.pid
+profiles/
+secrets.dat
+session_state.json
 .gitignore.bak

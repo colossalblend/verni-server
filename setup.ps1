@@ -111,4 +111,6 @@ Write-Host "  (script signs in itself; 2FA you confirm in the window or paste th
 Write-Host "   code here; iTunes is installed and launched automatically; the"
 Write-Host "   only possibly manual step is Store -> Authorize in the iTunes"
 Write-Host "   window if SC Info files do not appear after first launch)"
+Write-Host "Session keepalive (auto re-login if cookies die; 2FA stays manual):"
+Write-Host "  python session_keepalive.py --email you@example.com"
 Write-Host "Start: .\run_server.ps1   (worker spawns automatically)"

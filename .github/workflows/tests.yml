@@ -21,7 +21,7 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Syntax gate
-        run: python -m py_compile server.py health.py bridge.py make_key.py test_worker.py test_server.py test_flow.py test_security.py fake_worker.py tools/patch_runtime.py get_dsid.py
+        run: python -m py_compile server.py health.py bridge.py make_key.py test_worker.py test_server.py test_flow.py test_security.py fake_worker.py tools/patch_runtime.py get_dsid.py setup_account.py apple_session.py store.py session_keepalive.py
       - name: Generate TLS + verni key (localhost)
         run: |
           python make_key.py cert 127.0.0.1 --days 2
