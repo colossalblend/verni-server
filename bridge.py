@@ -28,13 +28,26 @@ LEN_RQSIG = 0x15
 SIG_LEN = 0x15  # размер ответной sig от AirFairSyncCalcSig (симметрично rq.sig; правь, если иначе)
 
 _worker_host = "127.0.0.1"
-_worker_port = 27987  # фактический порт iOSAuthSolution из main.cpp (auth_socket_bind(27987))
+_worker_ports: list[int] = [27987]  # iOSAuthSingle: auth_socket_bind(27987) в main.cpp
+_port_locks: list[asyncio.Lock] = []
+_rr_counter = 0
 
 
-def configure_worker(host: str, port: int) -> None:
-    global _worker_host, _worker_port
+def configure_worker(host: str, ports: int | list[int]) -> None:
+    """Порты воркеров. Несколько портов = несколько экземпляров iOSAuthSingle
+    (каждый со своим процессом), ими обрабатываются параллельные сессии.
+    Обращения к нативным iTunes DLL сериализуются замком на порт, т.к.
+    потокобезопасность iTunes.dll не гарантирована."""
+    global _worker_host, _worker_ports, _port_locks
     _worker_host = host
-    _worker_port = port
+    if isinstance(ports, int):
+        ports = [ports]
+    _worker_ports = [int(p) for p in ports if p] or [27987]
+    _port_locks = [asyncio.Lock() for _ in _worker_ports]
+
+
+def _ports_snapshot() -> tuple[list[int], list[asyncio.Lock]]:
+    return _worker_ports, _port_locks
 
 
 def _framed(payload: bytes) -> bytes:
@@ -64,6 +77,7 @@ class WorkerSession:
         self.created_at = time.time()
         self.touched_at = time.time()
         self.grappa: bytes | None = None
+        self._slot_lock: asyncio.Lock | None = None
 
     @property
     def age(self) -> float:
@@ -72,9 +86,36 @@ class WorkerSession:
     def touch(self) -> None:
         self.touched_at = time.time()
 
+    async def _acquire_slot(self) -> int:
+        """Выбирает порт воркера: сначала свободный, иначе ближайший по
+        round-robin (ждём его замок). Замок держится до close()."""
+        global _rr_counter
+        ports, locks = _ports_snapshot()
+        n = len(ports)
+        if n == 0:
+            raise OSError("no worker ports configured")
+        if n == 1:
+            await locks[0].acquire()
+            self._slot_lock = locks[0]
+            return ports[0]
+        for _ in range(n):
+            _rr_counter = (_rr_counter + 1) % n
+            idx = _rr_counter
+            lock = locks[idx]
+            if lock.locked():
+                continue
+            await lock.acquire()
+            self._slot_lock = lock
+            return ports[idx]
+        _rr_counter = (_rr_counter + 1) % n
+        await locks[_rr_counter].acquire()
+        self._slot_lock = locks[_rr_counter]
+        return ports[_rr_counter]
+
     async def _connect(self) -> None:
+        port = await self._acquire_slot()
         self.reader, self.writer = await asyncio.wait_for(
-            asyncio.open_connection(_worker_host, _worker_port), timeout=5
+            asyncio.open_connection(_worker_host, port), timeout=5
         )
 
     async def _send(self, payload: bytes) -> None:
@@ -88,9 +129,16 @@ class WorkerSession:
         fairplay_cert: bytes,
         device_type: int,
         key_type_support_version: int,
-        grappa_support_info: bytes | None,
+        dsid: int = 0,
+        grappa_support_info: bytes | None = None,
     ) -> bytes:
-        gsi = grappa_support_info if grappa_support_info is not None else bytes(LEN_GSI)
+        if grappa_support_info is None:
+            if not 0 <= dsid <= 0x7FFFFFFFFFFFFFFF:
+                raise ValueError("DSID must be a positive signed 64-bit integer")
+            # Первый QWORD GrappaSupportInfo = DSID этой сессии, остальные 12 байт нули.
+            gsi = struct.pack("<Q", dsid) + bytes(LEN_GSI - 8)
+        else:
+            gsi = grappa_support_info
         if len(gsi) != LEN_GSI:
             raise ValueError("GrappaSupportInfo must be 0x14 bytes")
         fpa = struct.pack("<IIII", device_type & 0xFFFFFFFF, key_type_support_version & 0xFFFFFFFF, 0, 0)
@@ -102,9 +150,15 @@ class WorkerSession:
             + udid
             + fairplay_cert
         )
-        await self._connect()
-        await self._send(payload)
-        self.grappa = await _recv_framed(self.reader)
+        # Exec.cpp пишет DSID из первого QWORD GrappaSupportInfo (патч
+        # tools/patch_runtime.py); нули = fallback dsid.txt рядом с .exe.
+        try:
+            await self._connect()
+            await self._send(payload)
+            self.grappa = await _recv_framed(self.reader)
+        except BaseException:
+            await self.close()  # отпускаем слот порта при любой ошибке
+            raise
         return self.grappa
 
     async def complete(self, device_grappa: bytes, rq_sig: bytes, request: bytes) -> tuple[bytes, bytes]:
@@ -131,6 +185,9 @@ class WorkerSession:
                 pass
         self.reader = None
         self.writer = None
+        if self._slot_lock is not None:
+            self._slot_lock.release()
+            self._slot_lock = None
 
     async def abort(self) -> None:
         await self.close()

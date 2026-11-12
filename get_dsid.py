@@ -13,6 +13,7 @@ You can stop any moment with Ctrl+C (browser will close automatically).
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import socket
@@ -149,6 +150,10 @@ def main() -> int:
                 worker_dir = worker_candidates[0].parent
                 (worker_dir / "dsid.txt").write_text(dsid, encoding="ascii")
                 print(f"[ok] copied to {worker_dir / 'dsid.txt'} (worker reads it on next connection)")
+            print("[ok] for multiple accounts, put the dsid into accounts.json:")
+            print(json.dumps({
+                "you@example.com": {"display_name": "You", "dsid": int(dsid)},
+            }, indent=2))
         else:
             print(f"[!] dsid not found in {args.timeout}s. All cookies seen: {cookie_dump or '<empty>'}")
             return 1

@@ -1,5 +1,10 @@
 {
   "your-apple-id@example.com": {
-    "display_name": "Lapbase"
+    "display_name": "Lapbase",
+    "dsid": 1234567890
+  },
+  "second-account@example.com": {
+    "display_name": "Second",
+    "dsid": 9876543210
   }
 }

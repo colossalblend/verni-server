@@ -20,8 +20,9 @@ async def one_conn(reader, writer):
         fpa = payload[8 + 0x14:8 + 0x14 + 0x10]
         udid = payload[8 + 0x14 + 0x10:8 + 0x14 + 0x10 + lu]
         fpc = payload[8 + 0x14 + 0x10 + lu:]
-        print(f"[pkg1] udid={udid!r} fpc={len(fpc)}B gsi0x14={gsi.hex()[:12]}... fpa={fpa.hex()}")
+        dsid, = struct.unpack("<Q", gsi[:8])
         assert len(gsi) == 0x14 and len(fpa) == 0x10
+        print(f"[pkg1] udid={udid!r} fpc={len(fpc)}B dsid={dsid} fpa={fpa.hex()}")
         dt, ktsv, _, _ = struct.unpack("<IIII", fpa)
         print(f"[pkg1] deviceType={dt:#x} keyTypeSupportVersion={ktsv:#x}")
         writer.write(struct.pack("<I", len(FAKE_GRAPPA)) + FAKE_GRAPPA)

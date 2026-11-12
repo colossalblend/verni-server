@@ -43,12 +43,14 @@ MAX_BODY = 2 * 1024 * 1024
 OWNER_TOKEN = os.environ.get("VERNI_TOKEN", "")
 WORKER_HOST = os.environ.get("VERNI_WORKER_HOST", "127.0.0.1")
 WORKER_PORT = int(os.environ.get("VERNI_WORKER_PORT", "27987"))
+WORKER_PORTS_RAW = os.environ.get("VERNI_WORKER_PORTS", "")
+WORKER_PORTS = [int(p) for p in WORKER_PORTS_RAW.replace(";", ",").split(",") if p.strip()] or [WORKER_PORT]
 ACCOUNTS_PATH = Path(os.environ.get("VERNI_ACCOUNTS", os.path.join(os.path.dirname(__file__), "accounts.json")))
 CATALOG_PATH = Path(os.environ.get("VERNI_CATALOG", os.path.join(os.path.dirname(__file__), "ipa-catalog.json")))
 IPA_PATH = Path(os.environ.get("VERNI_PA_PATH", os.path.join(os.path.dirname(__file__), "ipa")))
 SESSION_TTL = float(os.environ.get("VERNI_SESSION_TTL", "900"))
 
-bridge.configure_worker(WORKER_HOST, WORKER_PORT)
+bridge.configure_worker(WORKER_HOST, WORKER_PORTS)
 
 app = FastAPI(title="verni-server")
 
@@ -77,6 +79,27 @@ def load_json(path: Path):
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def find_account(account_id: str) -> tuple[str, dict] | tuple[None, None]:
+    """account_id = sha256(email); возвращает (email, info) из accounts.json."""
+    accounts = load_json(ACCOUNTS_PATH)
+    for email, info in accounts.items():
+        if hashlib.sha256(email.encode("utf-8")).hexdigest() == account_id:
+            return email, info if isinstance(info, dict) else {}
+    return None, None
+
+
+def account_dsid(info: dict) -> int:
+    """DSID аккаунта из accounts.json; 0 = fallback dsid.txt у воркера."""
+    raw = info.get("dsid", 0)
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int) and 0 < raw <= 9223372036854775807:
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit() and 0 < int(raw) <= 9223372036854775807:
+        return int(raw)
+    return 0
 
 
 def err(code: str, status: int) -> JSONResponse:
@@ -145,15 +168,9 @@ async def ready(request: Request):
     if kind == "invalid":
         return err("invalid_account_id" if value == "account_id" else "invalid_ipa_hash", 400)
     if kind == "account":
-        accounts = load_json(ACCOUNTS_PATH)
-        matched = None
-        for email in accounts:
-            if hashlib.sha256(email.encode("utf-8")).hexdigest() == value:
-                matched = email
-                break
+        matched, info = find_account(value)
         if matched is None:
             return err("account_not_in_catalog", 404)
-        info = accounts[matched]
         display_name = info.get("display_name") or info.get("account_display") or matched.split("@")[0]
         return JSONResponse({"status": "account_ready", "account_display_name": display_name})
     catalog = load_json(CATALOG_PATH)
@@ -177,15 +194,13 @@ async def begin(request: Request):
     if kind == "invalid":
         return err("invalid_account_id" if value == "account_id" else "invalid_ipa_hash", 400)
     if kind == "account":
-        accounts = load_json(ACCOUNTS_PATH)
-        matched = None
-        for email in accounts:
-            if hashlib.sha256(email.encode("utf-8")).hexdigest() == value:
-                matched = email
-                break
+        matched, info = find_account(value)
         if matched is None:
             return err("account_not_in_catalog", 404)
-    # ipa-режим допустим
+        dsid = account_dsid(info)
+    else:
+        # ipa-режим: без аккаунта -> fallback dsid.txt у воркера
+        dsid = 0
 
     device_udid = payload.get("deviceUDID")
     fpc_b64 = payload.get("FairPlayCertificate")
@@ -221,6 +236,7 @@ async def begin(request: Request):
                 fairplay_cert=fpc,
                 device_type=device_type,
                 key_type_support_version=key_version,
+                dsid=dsid,
                 grappa_support_info=None,
             ),
             timeout=30,
