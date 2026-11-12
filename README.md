@@ -95,6 +95,26 @@ powershell -ExecutionPolicy Bypass -File setup.ps1 -ServerHost <IP-или-DNS> [
 `.\srvlog.txt` не нужен — uvicorn пишет в консоль задачи Планировщика
 (или запусти вручную и смотри вывод).
 
+### Автонастройка аккаунта из логина+пароля
+
+Всё то же самое одной командой (в RDP-сессии сервера):
+
+```powershell
+python setup_account.py --email you@example.com
+# пароль спросит скрыто; либо: --password-stdin < pw.txt, либо env VERNI_APPLE_PASSWORD
+```
+
+Скрипт сам: логинится в Edge на icloud.com (2FA ты подтверждаешь в окне или
+вставляешь код в консоль — Apple-защиты не обходятся), вытаскивает DSID,
+прописывает его в `accounts.json` и `dsid.txt` (включая каталог воркера),
+ставит iTunes 12.10.11 при необходимости, запускает его первый раз и ждёт
+появления `SC Info.sidb/sidd`. Если после первого запуска SC Info не
+появились — останется ровно один ручной шаг (войти в аккаунт + `Store →
+Authorize This Computer` в окне iTunes), скрипт дождётся файлов сам.
+`--skip-browser` — только iTunes; `--skip-itunes` — только браузер+DSID.
+Пароль нигде не печатается и не логируется. RDP-сессию не закрывай
+(disconnect вместо log off).
+
 ## Шаг 0 — требования
 
 * Windows 10/11 x64 (не ARM) — сам server.py безразличен к битности, но

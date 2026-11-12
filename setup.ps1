@@ -105,8 +105,10 @@ Write-Host ("  .env.server : " + (Test-Path ".\.env.server"))
 Write-Host ("  verni-key.txt : " + (Test-Path ".\verni-key.txt"))
 Write-Host ("  worker exe : " + (Test-Path $exe))
 Write-Host ""
-Write-Host "Remaining manual steps (Apple side, cannot be automated):"
-Write-Host "  1. .\install_itunes.ps1   (downloads + silent-installs iTunes 12.10.11 32-bit)"
-Write-Host "  2. open iTunes once, sign in with your Apple ID, then Store -> Authorize This Computer"
-Write-Host "  3. accounts.json: real email + dsid per account (python get_dsid.py edge --account you@example.com)"
+Write-Host "Account setup (browser + iTunes + SC Info), in an RDP session:"
+Write-Host "  python setup_account.py --email you@example.com"
+Write-Host "  (script signs in itself; 2FA you confirm in the window or paste the"
+Write-Host "   code here; iTunes is installed and launched automatically; the"
+Write-Host "   only possibly manual step is Store -> Authorize in the iTunes"
+Write-Host "   window if SC Info files do not appear after first launch)"
 Write-Host "Start: .\run_server.ps1   (worker spawns automatically)"
